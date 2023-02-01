@@ -18,11 +18,13 @@ W bazie danych PostgreSQL istnieje narzędzie umożliwiające wykonywanie *Ciąg
 
 ## Diagram ER
 
-![Diagram ER Bazy Danych](./Diagram%20ERD.png "Diagram ER Bazy Danych")
+###### w "Indexes" są klucze główne złożone
+
+![Diagram ER Bazy Danych](./Diagram%20ER.png "Diagram ER Bazy Danych")
 
 ## Schemat bazy danych
 
-###### wraz z tym indeksami oraz więzami integralności
+###### wraz z indeksami oraz więzami integralności
 
 ![Schemat bazy danych](./Schemat%20Bazy%20Danych.png "Schemat bazy danych")
 

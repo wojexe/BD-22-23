@@ -77,7 +77,7 @@ CREATE TABLE IF NOT EXISTS Registrations (
 CREATE TABLE IF NOT EXISTS Preferences (
     userID uuid PRIMARY KEY REFERENCES Users (ID),
     newsletter boolean,
-    showDates boolean,
+    showDates boolean, -- requires basic
     exportInDarkTheme boolean, -- requires premium
     useBoldFonts boolean -- requires business
 );
@@ -88,7 +88,7 @@ CREATE TABLE IF NOT EXISTS "Subscription Types" (
 );
 
 CREATE TABLE IF NOT EXISTS Subscribers (
-    userID uuid REFERENCES Users (ID),
+    userID uuid REFERENCES Users (ID) NOT NULL,
     startDate timestamp NOT NULL,
     endDate timestamp NOT NULL,
     subscriptionType text REFERENCES "Subscription Types" (type) NOT NULL,
@@ -112,7 +112,7 @@ CREATE TABLE IF NOT EXISTS Payments (
 );
 
 CREATE TABLE IF NOT EXISTS Tokens (
-    userID uuid REFERENCES Users (ID),
+    userID uuid REFERENCES Users (ID) NOT NULL,
     applicationName text NOT NULL,
     token text NOT NULL,
     renewToken text NOT NULL,
