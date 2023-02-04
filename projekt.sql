@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS Users (
 
 CREATE TABLE IF NOT EXISTS People (
     ID serial PRIMARY KEY,
-    ownerID uuid REFERENCES Users (ID) NOT NULL,
+    ownerID uuid NOT NULL REFERENCES Users (ID) ON DELETE CASCADE,
     treeID int NOT NULL,
     firstName text NOT NULL,
     lastName text NOT NULL,
@@ -48,14 +48,13 @@ CREATE TABLE IF NOT EXISTS People (
     birthName text,
     dateOfBirth date,
     dateOfDeath date,
-    coupleID int,
     parentCoupleID int
 );
 
 CREATE TABLE IF NOT EXISTS Couples (
     ID serial UNIQUE NOT NULL,
     firstPersonID int NOT NULL REFERENCES People (ID) ON DELETE CASCADE,
-    secondPersonID int  NOT NULL REFERENCES People (ID) ON DELETE CASCADE,
+    secondPersonID int NOT NULL REFERENCES People (ID) ON DELETE CASCADE,
     treeID int NOT NULL,
     PRIMARY KEY (firstPersonID, secondPersonID),
     CHECK (firstPersonID != secondPersonID)
@@ -70,8 +69,7 @@ CREATE TABLE IF NOT EXISTS Trees (
 );
 
 ALTER TABLE People
-    ADD CONSTRAINT fk_couple FOREIGN KEY (coupleID) REFERENCES Couples (ID) ON DELETE CASCADE,
-    ADD CONSTRAINT fk_parentCouple FOREIGN KEY (parentCoupleID) REFERENCES Couples (ID) ON DELETE CASCADE,
+    ADD CONSTRAINT fk_parentCouple FOREIGN KEY (parentCoupleID) REFERENCES Couples (ID) ON DELETE SET NULL,
     ADD CONSTRAINT fk_trees FOREIGN KEY (treeID) REFERENCES Trees (ID) ON DELETE CASCADE;
     
 ALTER TABLE Couples
@@ -178,19 +176,6 @@ END;
 $$
 LANGUAGE PLPGSQL;
 
-CREATE OR REPLACE FUNCTION add_person_trigger ()
-    RETURNS TRIGGER
-    AS $$
-BEGIN
-    IF (NEW.coupleID IS NOT NULL) THEN
-        RAISE 'CoupleID cannot be added by an INSERT statement';
-    END IF;
-    
-    RETURN NEW;
-END;
-$$
-LANGUAGE PLPGSQL;
-
 CREATE OR REPLACE FUNCTION before_add_couple_trigger ()
     RETURNS TRIGGER
     AS $$
@@ -224,13 +209,6 @@ BEGIN
         SET rootCoupleID = NEW.ID
         WHERE T.ID = NEW.treeID
               AND rootCoupleID IS NULL;
-    
-    UPDATE
-        People AS P
-    SET
-        coupleID = NEW.ID
-    WHERE
-        P.ID IN (NEW.firstPersonID, NEW.secondPersonID);
         
     RETURN NEW;
 END;
@@ -382,11 +360,6 @@ CREATE TRIGGER check_couple
     -- Check if couple already exists (prevent (1,2) (2,1))
     -- and if both people are owned by the same user
     EXECUTE FUNCTION check_couple_trigger ();
-
-CREATE TRIGGER add_person
-    BEFORE INSERT ON People
-    FOR EACH ROW
-    EXECUTE FUNCTION add_person_trigger ();
     
 CREATE TRIGGER before_add_couple
     BEFORE INSERT ON Couples
@@ -428,8 +401,8 @@ CREATE OR REPLACE FUNCTION get_couple_parent_couple_id (pcoupleID integer)
         END
     FROM
         Couples AS Co
-        JOIN People AS P1 ON P1.ID = Co.firstPersonID
-        JOIN People AS P2 ON P2.ID = Co.secondPersonID
+            JOIN People AS P1 ON P1.ID = Co.firstPersonID
+            JOIN People AS P2 ON P2.ID = Co.secondPersonID
     WHERE
         Co.ID = pcoupleID
 $$
@@ -818,178 +791,4 @@ FROM
 WHERE
     startDate <= LOCALTIMESTAMP
     AND LOCALTIMESTAMP <= endDate;
-
-
--- Wypelnienie bazy danych
-
-INSERT INTO Users (username, email, password)
-    VALUES ('test1', 'test1@gmail.com', 'testPass1'),
-        ('test2', 'test2@gmail.com', 'testPass2'),
-        ('test3', 'test3@gmail.com', 'testPass3'),  
-        ('test4', 'test4@gmail.com', 'testPass4');
-
-DO $$
-DECLARE test1ID uuid;
-DECLARE test2ID uuid;
-BEGIN
-
-test1ID := (SELECT id FROM Users WHERE username = 'test1');
-test2ID := (SELECT id FROM Users WHERE username = 'test2');
-
-INSERT INTO Trees (name, ownerID)
-    VALUES ('test1s tree', test1ID),
-           ('test2s tree', test2ID);
-
-INSERT INTO People (firstName, lastName, dateOfBirth, dateOfDeath, ownerID, treeID)
-   VALUES ('Andrzej', 'Matiasz', make_date(1900, 1, 1), make_date(1911, 1, 1), test1ID, 1),
-   ('Maciej', 'Jarewicz', make_date(1901, 1, 1), make_date(1920, 1, 1), test1ID, 1),
-   
-   ('Adam', 'Krzykiewski', make_date(1903, 1, 1), make_date(1933, 1, 1), test1ID, 1),
-   ('Lorenza', 'Ubes', make_date(1947, 1, 1), make_date(1993, 1, 1), test1ID, 1),
-   
-   ('Henryk', 'Kapacz', make_date(1911, 1, 1), make_date(1922, 1, 1), test1ID, 1),
-   ('Agata', 'Lomper', make_date(1923, 1, 1), make_date(1960, 1, 1), test1ID, 1),
-   
-   ('Bartosz', 'Fano', make_date(1932, 1, 1), make_date(2003, 1, 1), test1ID, 1),
-   ('Sandra', 'Eppler', make_date(1983, 1, 1), make_date(2022, 1, 1), test1ID, 1),
-   
-   ('Marianna', 'Kuźmir', make_date(1944, 1, 1), make_date(2003, 1, 1), test2ID, 2),
-   ('Kacper', 'Komrat', make_date(1973, 1, 1), make_date(2022, 1, 1), test2ID, 2);
-   
-END;
-$$ LANGUAGE PLPGSQL;
-
-INSERT INTO Couples (firstPersonID, secondPersonID)
-   VALUES (1, 2), (3, 4), (5, 6), (7, 8), (9, 10);
-
--- BŁĄD	
---INSERT INTO Couples (firstPersonID, secondPersonID)
---	VALUES (1, 9);
-
--- BŁĄD	
---INSERT INTO Couples (firstPersonID, secondPersonID)
---	VALUES (1, 2);
-
--- BŁĄD	
---INSERT INTO Couples (firstPersonID, secondPersonID)
---	VALUES (2, 1);
-
-
-UPDATE People 
-   SET parentCoupleID = 1
-   WHERE firstName IN ('Adam');
-
-
-UPDATE People
-   SET parentCoupleID = 2
-   WHERE firstName IN ('Agata', 'Sandra');
-
-
---DELETE FROM Trees WHERE id = 1;
-DELETE FROM Couples WHERE id = 2;
-
-
-INSERT INTO "Payment Methods"
-    VALUES ('Credit card'), ('Paypal'), ('Skrill'), ('Apple Pay'), ('Google Pay');
-
-
-INSERT INTO "Subscription Types"
-    VALUES ('Basic', 0.99), ('Premium', 2.99), ('Business', 9.99);
-
-
-INSERT INTO Payments
-    VALUES ((
-            SELECT id FROM Users
-            WHERE username = 'test1'
-        ), 'Paypal', 'Basic', true, NULL, 0.99, make_date(1999, 1, 21)),
-        ((
-            SELECT id FROM Users
-            WHERE username = 'test4'
-        ), 'Google Pay', 'Premium', true, NULL, 2.99, make_date(2002, 1, 21)),
-        ((
-            SELECT id FROM Users
-            WHERE username = 'test1'
-        ), 'Apple Pay', 'Basic', true, NULL, 0.99, make_date(1999, 2, 20)),
-        ((
-            SELECT id FROM Users
-            WHERE username = 'test1'
-        ), 'Credit card', 'Business', false, 'Zbyt niskie saldo', 9.99, make_date(1999, 4, 21)),
-        ((
-            SELECT id FROM Users
-            WHERE username = 'test1'
-        ), 'Credit card', 'Business', true, NULL, 9.99, make_date(1999, 4, 21) + interval '1 minute'),
-        ((
-            SELECT id FROM Users
-            WHERE username = 'test1'
-        ), 'Credit card', 'Premium', true, NULL, 2.99, make_date(1999, 4, 23)),
-        ((
-            SELECT id FROM Users
-            WHERE username = 'test1'
-        ), 'Credit card', 'Basic', true, NULL, 0.99, make_date(2023, 1, 10)),
-        ((
-            SELECT id FROM Users
-            WHERE username = 'test2'
-        ), 'Credit card', 'Premium', true, NULL, 2.99, make_date(2023, 1, 10)),
-        ((
-            SELECT id FROM Users
-            WHERE username = 'test3'
-        ), 'Credit card', 'Business', true, NULL, 9.99, make_date(2023, 1, 10));
-
-
-INSERT INTO Preferences
-    VALUES ((
-            SELECT id FROM Users
-            WHERE username = 'test1'
-        ), true, true, false, false),
-        ((
-            SELECT id FROM Users
-            WHERE username = 'test2'
-        ), true, true, true, false),
-        ((
-            SELECT id FROM Users
-            WHERE username = 'test3'
-        ), true, true, true, true);
-        
--- BŁĄD
--- INSERT INTO Preferences
---     VALUES ((
---             SELECT id FROM Users
---             WHERE username = 'test1'
---         ), true, true, true, false);
-
--- BŁĄD
--- INSERT INTO Preferences
---     VALUES ((
---             SELECT id FROM Users
---             WHERE username = 'test1'
---         ), true, true, true, true);
-
-
--- Operacje na tokenie:
---SELECT token_request(bind_token('<id użytkownika>', '<token>'), <'access' | 'renew' | 'delete'>,  <appName >);
-
-SELECT
-    token_request (bind_token((
-        SELECT
-            id
-        FROM Users
-        WHERE
-            username = 'test1'), ''), 'create', 'Google Docs');
-
-
-SELECT get_payments_between(make_date(1999, 1, 19), make_date(1999, 4, 23) - interval '1 hour');
-
-SELECT * FROM Subscribers;
-SELECT * FROM current_subscribers;
-SELECT * FROM Payments;
-
-SELECT
-    *
-FROM
-    display_ancestors;
-
-SELECT
-    *
-FROM
-    display_ancestors_couple;
---WHERE Couple = 3;
+    
