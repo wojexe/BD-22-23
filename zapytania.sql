@@ -18,6 +18,7 @@ INSERT INTO Trees (name, ownerID)
     VALUES ('test1s tree', test1ID),
            ('test2s tree', test2ID);
 
+
 INSERT INTO People (firstName, lastName, dateOfBirth, dateOfDeath, ownerID, treeID)
    VALUES ('Andrzej', 'Matiasz', make_date(1900, 1, 1), make_date(1911, 1, 1), test1ID, 1),
    ('Maciej', 'Jarewicz', make_date(1901, 1, 1), make_date(1920, 1, 1), test1ID, 1),
@@ -80,39 +81,39 @@ INSERT INTO Payments
     VALUES ((
             SELECT id FROM Users
             WHERE username = 'test1'
-        ), 'Paypal', 'Basic', true, NULL, 0.99, make_date(1999, 1, 21)),
+        ), 'Paypal', 'Basic', NULL, 0.99, make_date(1999, 1, 21)),
         ((
             SELECT id FROM Users
             WHERE username = 'test4'
-        ), 'Google Pay', 'Premium', true, NULL, 2.99, make_date(2002, 1, 21)),
+        ), 'Google Pay', 'Premium', NULL, 2.99, make_date(2002, 1, 21)),
         ((
             SELECT id FROM Users
             WHERE username = 'test1'
-        ), 'Apple Pay', 'Basic', true, NULL, 0.99, make_date(1999, 2, 20)),
+        ), 'Apple Pay', 'Basic', NULL, 0.99, make_date(1999, 2, 20)),
         ((
             SELECT id FROM Users
             WHERE username = 'test1'
-        ), 'Credit card', 'Business', false, 'Zbyt niskie saldo', 9.99, make_date(1999, 4, 21)),
+        ), 'Credit card', 'Business', 'Zbyt niskie saldo', 9.99, make_date(1999, 4, 21)),
         ((
             SELECT id FROM Users
             WHERE username = 'test1'
-        ), 'Credit card', 'Business', true, NULL, 9.99, make_date(1999, 4, 21) + interval '1 minute'),
+        ), 'Credit card', 'Business', NULL, 9.99, make_date(1999, 4, 21) + interval '1 minute'),
         ((
             SELECT id FROM Users
             WHERE username = 'test1'
-        ), 'Credit card', 'Premium', true, NULL, 2.99, make_date(1999, 4, 23)),
+        ), 'Credit card', 'Premium', NULL, 2.99, make_date(1999, 4, 23)),
         ((
             SELECT id FROM Users
             WHERE username = 'test1'
-        ), 'Credit card', 'Basic', true, NULL, 0.99, make_date(2023, 1, 10)),
+        ), 'Credit card', 'Basic', NULL, 0.99, make_date(2023, 1, 10)),
         ((
             SELECT id FROM Users
             WHERE username = 'test2'
-        ), 'Credit card', 'Premium', true, NULL, 2.99, make_date(2023, 1, 10)),
+        ), 'Credit card', 'Premium', NULL, 2.99, make_date(2023, 1, 10)),
         ((
             SELECT id FROM Users
             WHERE username = 'test3'
-        ), 'Credit card', 'Business', true, NULL, 9.99, make_date(2023, 1, 10));
+        ), 'Credit card', 'Business', NULL, 9.99, make_date(2023, 1, 10));
 
 
 INSERT INTO Preferences

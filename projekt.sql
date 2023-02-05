@@ -80,6 +80,8 @@ CREATE TABLE IF NOT EXISTS Registrations (
     registrationDate timestamp NOT NULL
 );
 
+CREATE INDEX IF NOT EXISTS user_idx ON Registrations (userID);
+
 CREATE TABLE IF NOT EXISTS Preferences (
     userID uuid PRIMARY KEY REFERENCES Users (ID) ON DELETE CASCADE,
     newsletter boolean,
@@ -108,9 +110,8 @@ CREATE TABLE IF NOT EXISTS "Payment Methods" (
 
 CREATE TABLE IF NOT EXISTS Payments (
     userID uuid NOT NULL REFERENCES Users (ID) ON DELETE CASCADE,
-    method text REFERENCES "Payment Methods" (method) NOT NULL,
+    method text NOT NULL REFERENCES "Payment Methods" (method),
     subscriptionType text REFERENCES "Subscription Types" (type) NOT NULL,
-    succeeded boolean NOT NULL,
     errorMessage text,
     total money NOT NULL,
     timestamp timestamp NOT NULL,
@@ -280,7 +281,7 @@ CREATE OR REPLACE FUNCTION save_payment_trigger ()
     RETURNS TRIGGER
     AS $$
 BEGIN
-    IF NEW.succeeded = TRUE THEN
+    IF NEW.errorMessage IS NULL THEN
         IF EXISTS (
             SELECT
                 1
