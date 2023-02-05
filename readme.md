@@ -18,30 +18,27 @@ W bazie danych PostgreSQL istnieje narzędzie umożliwiające wykonywanie *Ciąg
 
 ## Diagram ER
 
-###### w "Indexes" są klucze główne złożone
-
 ![Diagram ER Bazy Danych](./Diagram%20ER.png "Diagram ER Bazy Danych")
 
 ## Schemat bazy danych
-
-###### wraz z indeksami oraz więzami integralności
 
 ![Schemat bazy danych](./Schemat%20Bazy%20Danych.png "Schemat bazy danych")
 
 ## Tabele
 
-| Nazwa tabeli | Przetłumaczona nazwa tabeli |
+| Nazwa tabeli | Przechowywane dane |
 | --- | --- |
-| Users | *Użytkownicy serwisu* |
-| Subscribers | *Subskrybenci serwisu* |
-| Subscription Types |  *Rodzaje subskrypcji* |
-| Payments | *Historia płatności* |
-| Payment Methods |  *Metody płatności* |
-| Preferences | *Ustawienia użytkownika* |
-| Registrations | *Historia rejestracji* |
-| People | *Osoby zapisane w drzewach* |
-| Couples | *Związki zapisane w drzewach* |
-| Trees | *Drzewa genealogiczne* |
+| Users | Użytkownicy serwisu |
+| Subscribers | Subskrybenci serwisu - dane o czasie, w którym posiadali pewien rodzaj subskrypcji |
+| Subscription Types | Rodzaje subskrypcji |
+| Payments | Historia płatności dokonanych przez użytkowników |
+| Payment Methods | Metody płatności |
+| Preferences | Ustawienia użytkownika - niektóre wymagające subskrypcji |
+| Tokens | Klucze dostępu, utworzone przez użytkowników, w celu programatycznego dostępu do serwisu (API) |
+| Registrations | Historia rejestracji użytkowników |
+| People | Osoby wpisane do serwisu - mogą być dodane do drzew |
+| Couples | Związki pomiędzy osobami dodanymi do serwisu |
+| Trees | Nazwa drzewa, korzeń oraz identyfikator wraz z twórcą |
 
 ## Widoki
 
@@ -128,8 +125,8 @@ CREATE OR REPLACE FUNCTION get_couple_parent_couple_id (pcoupleID integer)
         END
     FROM
         Couples AS Co
-        JOIN People AS P1 ON P1.ID = Co.firstPersonID
-        JOIN People AS P2 ON P2.ID = Co.secondPersonID
+            JOIN People AS P1 ON P1.ID = Co.firstPersonID
+            JOIN People AS P2 ON P2.ID = Co.secondPersonID
     WHERE
         Co.ID = pcoupleID
 $$
@@ -170,19 +167,36 @@ $$
 LANGUAGE SQL;
 ```
 
-##### Procedura składowana zwracająca wszystkich subskrybentów serwisu z okresu zadanego argumentami
+##### Procedura składowana zwracająca wszystkich nowych subskrybentów serwisu z okresu zadanego argumentami
 
 ```sql
-CREATE OR REPLACE FUNCTION get_subscribers_between (pstartTime timestamp, pendTime timestamp)
- RETURNS SETOF Subscribers
- AS $$
-  SELECT
-      *
-  FROM
-      Subscribers AS S
-  WHERE
-      S.startDate <= pendTime
-      AND S.endDate >= pstartTime
+CREATE OR REPLACE FUNCTION get_new_subscribers (pstartTime timestamp, pendTime timestamp)
+    RETURNS SETOF Subscribers
+    AS $$
+    SELECT
+        *
+    FROM
+        Subscribers AS S
+    WHERE
+        pstartTime <= S.startDate
+        AND S.startDate <= pendTime;
+$$
+LANGUAGE SQL;
+```
+
+##### Procedura składowana zwracająca wszystkich utraconych subskrybentów serwisu z okresu zadanego argumentami
+
+```sql
+CREATE OR REPLACE FUNCTION get_lost_subscribers (pstartTime timestamp, pendTime timestamp)
+    RETURNS SETOF Subscribers
+    AS $$
+    SELECT
+        *
+    FROM
+        Subscribers AS S
+    WHERE
+        pstartTime <= S.endDate
+        AND S.endDate <= pendTime;
 $$
 LANGUAGE SQL;
 ```
@@ -228,6 +242,32 @@ BEGIN
             curr := nextCouple;
         END IF;
     END LOOP;
+END;
+$$
+LANGUAGE PLPGSQL;
+```
+
+##### Funkcja zwracająca unikalne ID użytkownika o nazwie zadanej argumentem
+
+```sql
+CREATE OR REPLACE FUNCTION get_uuid (pusername text)
+  RETURNS TABLE (
+    uuid uuid,
+    uuid_send text
+  )
+  AS $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM Users AS U
+    WHERE U.username = pusername) THEN
+    RAISE 'Provided user does not exist.';
+  END IF;
+  
+  RETURN QUERY
+    SELECT ID, encode(uuid_send(ID), 'base64')
+    FROM Users AS U
+    WHERE U.username = pusername;
 END;
 $$
 LANGUAGE PLPGSQL;
@@ -329,7 +369,7 @@ LANGUAGE PLPGSQL;
 ##### Funkcja odnawiająca token użytkownika serwisu
 
 ```sql
-CREATE OR REPLACE FUNCTION renew_request (puserID uuid, appName text)
+CREATE OR REPLACE FUNCTION renew_request (puserID uuid, tokenData text, appName text)
     RETURNS TABLE (
         userID uuid,
         message text,
@@ -389,7 +429,7 @@ BEGIN
     SELECT DT.userID, DT.hash INTO puserID, tokenData FROM decode_token(providedToken) AS DT;
 
     CASE requestType
-    WHEN 'access' THEN
+    WHEN 'create' THEN
         IF (
             SELECT
                 count(T.userID)
@@ -411,7 +451,7 @@ BEGIN
             RAISE 'The token you have provided is not a valid token.'
             USING HINT = 'It may have expired.';
         ELSE
-            RETURN QUERY SELECT * FROM renew_request(puserID, tokenData);
+            RETURN QUERY SELECT * FROM renew_request(puserID, tokenData, appName);
         END IF;
     WHEN 'delete' THEN
         IF NOT EXISTS (SELECT 1 FROM Tokens AS T
@@ -436,9 +476,31 @@ BEGIN
     ELSE
     RETURN QUERY 
         SELECT puserID,
-            'Invalid request type. Available request types are: (access), (renew), (delete).',
+            'Invalid request type. Available request types are: (create), (renew), (delete).',
             NULL, NULL, NULL, NULL;
     END CASE;
+END;
+$$
+LANGUAGE PLPGSQL;
+```
+
+##### Funkcja sprawdzająca, czy zadane argumentami ID oraz hasło użytkownika zgadzają się z danymi przechowywanymi w bazie
+
+```sql
+CREATE OR REPLACE FUNCTION validate_sign_in (puserID text, ppassword text)
+    RETURNS boolean
+    AS $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM Users AS U
+        WHERE U.ID = puserID::uuid
+            AND U.password = crypt(ppassword, U.password)
+    ) THEN
+        RETURN TRUE;
+    ELSE
+        RETURN FALSE;
+    END IF;
 END;
 $$
 LANGUAGE PLPGSQL;
@@ -447,6 +509,13 @@ LANGUAGE PLPGSQL;
 ## Wyzwalacze
 
 *Komentarze dotyczące działania funkcji wywoływanych przez wyzwalacze są dostępne [w kolejnej sekcji](#procedury-wyzwalaczy), wraz z ich implementacjami.*
+
+```sql
+CREATE TRIGGER hash_password
+    BEFORE INSERT ON Users
+    FOR EACH ROW
+    EXECUTE FUNCTION hash_password_trigger ();
+```
 
 ```sql
 CREATE TRIGGER register_user
@@ -465,10 +534,17 @@ CREATE TRIGGER check_couple
 ```
 
 ```sql
-CREATE TRIGGER add_couple
+CREATE TRIGGER before_add_couple
+    BEFORE INSERT ON Couples
+    FOR EACH ROW
+    EXECUTE FUNCTION before_add_couple_trigger ();
+```
+
+```sql
+CREATE TRIGGER after_add_couple
     AFTER INSERT ON Couples
     FOR EACH ROW
-    EXECUTE FUNCTION add_couple_trigger ();
+    EXECUTE FUNCTION after_add_couple_trigger ();
 ```
 
 ```sql
@@ -529,19 +605,47 @@ $$
 LANGUAGE PLPGSQL;
 ```
 
-##### Gdy dodajemy związek, dopisujemy ID związku do pary osób (ułatwia to korzystanie z bazy danych)
+##### Gdy dodajemy związek do tabeli, a nie ma on jeszcze przydzielonego drzewa, to dopisujemy ID drzewa do wiersza (korzystając z ID drzew, do których należą członkowie związku)
 
 ```sql
-CREATE OR REPLACE FUNCTION add_couple_trigger ()
+CREATE OR REPLACE FUNCTION before_add_couple_trigger ()
+    RETURNS TRIGGER
+    AS $$
+DECLARE firstPersonTreeID int;
+DECLARE secondPersonTreeID int;
+BEGIN    
+    IF (NEW.treeID IS NULL) THEN
+        firstPersonTreeID := (SELECT treeID FROM People WHERE ID = NEW.firstPersonID);
+        secondPersonTreeID := (SELECT treeID FROM People WHERE ID = NEW.secondPersonID);
+
+        IF (firstPersonTreeID != secondPersonTreeID) THEN
+            RAISE 'Cannot create a couple from persons from different trees';
+        END IF;
+
+        INSERT INTO Couples (ID, firstPersonID, secondPersonID, treeID)
+            VALUES (NEW.ID, NEW.firstPersonID, NEW.secondPersonID, firstPersonTreeID);
+        
+        RETURN null;
+    END IF;
+
+    RETURN NEW;
+END;
+$$
+LANGUAGE PLPGSQL;
+```
+
+##### Po dodaniu pary posiadającej (zagwarantowane wyżej) ID drzewa, jeśli jest to pierwsza para w drzewie - dodaj ją jako korzeń
+
+```sql
+CREATE OR REPLACE FUNCTION after_add_couple_trigger ()
     RETURNS TRIGGER
     AS $$
 BEGIN
-    UPDATE
-        People AS P
-    SET
-        coupleID = NEW.ID
-    WHERE
-        P.ID IN (NEW.firstPersonID, NEW.secondPersonID);
+    UPDATE Trees AS T
+        SET rootCoupleID = NEW.ID
+        WHERE T.ID = NEW.treeID
+              AND rootCoupleID IS NULL;
+        
     RETURN NEW;
 END;
 $$
@@ -563,25 +667,43 @@ $$
 LANGUAGE PLPGSQL;
 ```
 
-##### Gdy dodajemy osoby do drzewa użytkownika A, to kreatorem tych osób nie może być nikt inny niż A
+##### Sprawdzamy, czy użytkownik ma możliwość stworzenia kolejnego drzewa, zależnie od rodzaju subskrypcji
 
 ```sql
-CREATE OR REPLACE FUNCTION check_tree_trigger ()
-    RETURNS TRIGGER
-    AS $$
+CREATE OR REPLACE FUNCTION add_tree_trigger ()
+  RETURNS TRIGGER
+  AS $$
+DECLARE subscriptionType text;
+DECLARE currentTreeCount int;
 BEGIN
-    IF EXISTS (
-        SELECT
-            1
-        FROM
-            Couples AS C
-            JOIN People AS P ON P.coupleID = C.ID
-        WHERE
-            C.ID = NEW.rootCoupleID
-            AND P.ownerID != NEW.ownerID) THEN
-            RAISE 'Cannot create a tree from persons owned by another user';
-    END IF;
-    RETURN NEW;
+   subscriptionType := (SELECT CS.subscriptionType
+                        FROM current_subscribers AS CS
+                        WHERE CS.userID = NEW.ownerID);
+                        
+   currentTreeCount := (SELECT COUNT(*)
+                        FROM Trees AS T
+                        WHERE T.ownerID = NEW.ownerID);
+
+   CASE subscriptionType
+     WHEN 'Business' THEN
+         IF currentTreeCount >= 60 THEN
+             RAISE 'You can have at most 60 trees at the same time';
+         END IF;
+     WHEN 'Premium' THEN
+         IF currentTreeCount >= 40 THEN
+             RAISE 'You can have at most 40 trees at the same time';
+         END IF;
+     WHEN 'Basic' THEN
+         IF currentTreeCount >= 30 THEN
+             RAISE 'You can have at most 30 trees at the same time';
+         END IF;
+     ELSE
+         IF currentTreeCount >= 15 THEN
+             RAISE 'You can have at most 15 trees at the same time';
+         END IF;
+   END CASE;
+
+  RETURN NEW;
 END;
 $$
 LANGUAGE PLPGSQL;
@@ -594,7 +716,7 @@ CREATE OR REPLACE FUNCTION save_payment_trigger ()
     RETURNS TRIGGER
     AS $$
 BEGIN
-    IF NEW.succeeded = TRUE THEN
+    IF NEW.errorMessage IS NULL THEN
         IF EXISTS (
             SELECT
                 1
@@ -665,8 +787,6 @@ LANGUAGE PLPGSQL;
 ```sql
 CREATE DATABASE "ProjektBD";
 
--- Dodatki (unikalne ID oraz obsługa szyfrowania)
-
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
@@ -702,48 +822,57 @@ CREATE TABLE IF NOT EXISTS Users (
     ID uuid PRIMARY KEY DEFAULT uuid_generate_v4 (),
     username text UNIQUE NOT NULL,
     email text UNIQUE NOT NULL,
-    password text NOT NULL
+    password text NOT NULL,
+    CHECK (COALESCE(TRIM(username), '') != ''),
+    CHECK (COALESCE(TRIM(email), '') != '')
 );
 
 CREATE TABLE IF NOT EXISTS People (
     ID serial PRIMARY KEY,
-    ownerID uuid REFERENCES Users (ID) NOT NULL,
+    ownerID uuid NOT NULL REFERENCES Users (ID) ON DELETE CASCADE,
+    treeID int NOT NULL,
     firstName text NOT NULL,
     lastName text NOT NULL,
     additionalName text,
     birthName text,
     dateOfBirth date,
     dateOfDeath date,
-    coupleID int,
     parentCoupleID int
 );
 
 CREATE TABLE IF NOT EXISTS Couples (
     ID serial UNIQUE NOT NULL,
-    firstPersonID int REFERENCES People (ID) NOT NULL,
-    secondPersonID int REFERENCES People (ID) NOT NULL,
+    firstPersonID int NOT NULL REFERENCES People (ID) ON DELETE CASCADE,
+    secondPersonID int NOT NULL REFERENCES People (ID) ON DELETE CASCADE,
+    treeID int NOT NULL,
     PRIMARY KEY (firstPersonID, secondPersonID),
     CHECK (firstPersonID != secondPersonID)
 );
 
-ALTER TABLE People
-    ADD CONSTRAINT fk_couple FOREIGN KEY (coupleID) REFERENCES Couples (ID),
-    ADD CONSTRAINT fk_parentCouple FOREIGN KEY (parentCoupleID) REFERENCES Couples (ID);
-
 CREATE TABLE IF NOT EXISTS Trees (
-    ID serial UNIQUE NOT NULL,
-    ownerID uuid REFERENCES Users (ID),
-    rootCoupleID int REFERENCES Couples (ID),
-    PRIMARY KEY (ownerID, rootCoupleID)
+    ID serial PRIMARY KEY,
+    name text NOT NULL,
+    ownerID uuid NOT NULL REFERENCES Users (ID) ON DELETE CASCADE,
+    rootCoupleID int REFERENCES Couples (ID) ON DELETE CASCADE,
+    UNIQUE (ID, ownerID)
 );
 
+ALTER TABLE People
+    ADD CONSTRAINT fk_parentCouple FOREIGN KEY (parentCoupleID) REFERENCES Couples (ID) ON DELETE SET NULL,
+    ADD CONSTRAINT fk_trees FOREIGN KEY (treeID) REFERENCES Trees (ID) ON DELETE CASCADE;
+    
+ALTER TABLE Couples
+    ADD CONSTRAINT fk_trees FOREIGN KEY (treeID) REFERENCES Trees (ID) ON DELETE CASCADE;
+
 CREATE TABLE IF NOT EXISTS Registrations (
-    userID uuid PRIMARY KEY REFERENCES Users (ID),
+    userID uuid PRIMARY KEY, -- NO REFERENCES Users (ID), since we don't want to lose registration data on user deletion
     registrationDate timestamp NOT NULL
 );
 
+CREATE INDEX IF NOT EXISTS user_idx ON Registrations (userID);
+
 CREATE TABLE IF NOT EXISTS Preferences (
-    userID uuid PRIMARY KEY REFERENCES Users (ID),
+    userID uuid PRIMARY KEY REFERENCES Users (ID) ON DELETE CASCADE,
     newsletter boolean,
     showDates boolean, -- requires basic
     exportInDarkTheme boolean, -- requires premium
@@ -756,7 +885,7 @@ CREATE TABLE IF NOT EXISTS "Subscription Types" (
 );
 
 CREATE TABLE IF NOT EXISTS Subscribers (
-    userID uuid REFERENCES Users (ID),
+    userID uuid NOT NULL REFERENCES Users (ID) ON DELETE CASCADE,
     startDate timestamp NOT NULL,
     endDate timestamp NOT NULL,
     subscriptionType text REFERENCES "Subscription Types" (type) NOT NULL,
@@ -769,10 +898,9 @@ CREATE TABLE IF NOT EXISTS "Payment Methods" (
 );
 
 CREATE TABLE IF NOT EXISTS Payments (
-    userID uuid REFERENCES Users (ID) NOT NULL,
-    method text REFERENCES "Payment Methods" (method) NOT NULL,
+    userID uuid NOT NULL REFERENCES Users (ID) ON DELETE CASCADE,
+    method text NOT NULL REFERENCES "Payment Methods" (method),
     subscriptionType text REFERENCES "Subscription Types" (type) NOT NULL,
-    succeeded boolean NOT NULL,
     errorMessage text,
     total money NOT NULL,
     timestamp timestamp NOT NULL,
@@ -780,7 +908,7 @@ CREATE TABLE IF NOT EXISTS Payments (
 );
 
 CREATE TABLE IF NOT EXISTS Tokens (
-    userID uuid REFERENCES Users (ID),
+    userID uuid NOT NULL REFERENCES Users (ID) ON DELETE CASCADE,
     applicationName text NOT NULL,
     token text NOT NULL,
     renewToken text NOT NULL,
@@ -789,87 +917,93 @@ CREATE TABLE IF NOT EXISTS Tokens (
     PRIMARY KEY (userID, token)
 );
 
-
 -- Własne typy
 
 DO
 LANGUAGE PLPGSQL
 $$
 BEGIN
+    DROP TYPE IF EXISTS TokenRequestType CASCADE;
     IF NOT EXISTS (
         SELECT 1
         FROM pg_type
         WHERE typname = 'tokenrequesttype') THEN
-    CREATE TYPE TokenRequestType AS ENUM ('access', 'renew', 'delete');
+    CREATE TYPE TokenRequestType AS ENUM ('create', 'renew', 'delete');
     END IF;
 END$$;
+
 ```
 
 ## Przykładowe zapytania
 
 ```sql
 INSERT INTO Users (username, email, password)
-    VALUES ('test1', 'test1@gmail.com', crypt('testPass1', gen_salt('bf'))),
-        ('test2', 'test2@gmail.com', crypt('testPass2', gen_salt('bf'))),
-        ('test3', 'test3@gmail.com', crypt('testPass3', gen_salt('bf'))),
-        ('test4', 'test4@gmail.com', crypt('testPass4', gen_salt('bf')));
+    VALUES ('test1', 'test1@gmail.com', 'testPass1'),
+        ('test2', 'test2@gmail.com', 'testPass2'),
+        ('test3', 'test3@gmail.com', 'testPass3'),  
+        ('test4', 'test4@gmail.com', 'testPass4');
+
+DO $$
+DECLARE test1ID uuid;
+DECLARE test2ID uuid;
+BEGIN
+
+test1ID := (SELECT id FROM Users WHERE username = 'test1');
+test2ID := (SELECT id FROM Users WHERE username = 'test2');
+
+INSERT INTO Trees (name, ownerID)
+    VALUES ('test1s tree', test1ID),
+           ('test2s tree', test2ID);
 
 
-INSERT INTO People (firstName, lastName, dateOfBirth, dateOfDeath, ownerID)
-    VALUES ('Andrzej', 'Matiasz', make_date(1900, 1, 1), make_date(1911, 1, 1), (SELECT id FROM Users WHERE username = 'test1')),
-    ('Maciej', 'Jarewicz', make_date(1901, 1, 1), make_date(1920, 1, 1), (SELECT id FROM Users WHERE username = 'test1')),
-    
-    ('Adam', 'Krzykiewski', make_date(1903, 1, 1), make_date(1933, 1, 1), (SELECT id FROM Users WHERE username = 'test1')),
-    ('Lorenza', 'Ubes', make_date(1947, 1, 1), make_date(1993, 1, 1), (SELECT id FROM Users WHERE username = 'test1')),
-    
-    ('Henryk', 'Kapacz', make_date(1911, 1, 1), make_date(1922, 1, 1), (SELECT id FROM Users WHERE username = 'test1')),
-    ('Agata', 'Lomper', make_date(1923, 1, 1), make_date(1960, 1, 1), (SELECT id FROM Users WHERE username = 'test1')),
-    
-    ('Bartosz', 'Fano', make_date(1932, 1, 1), make_date(2003, 1, 1), (SELECT id FROM Users WHERE username = 'test1')),
-    ('Sandra', 'Eppler', make_date(1983, 1, 1), make_date(2022, 1, 1), (SELECT id FROM Users WHERE username = 'test1')),
-    
-    ('Marianna', 'Kuźmir', make_date(1944, 1, 1), make_date(2003, 1, 1), (SELECT id FROM Users WHERE username = 'test2')),
-    ('Kacper', 'Komrat', make_date(1973, 1, 1), make_date(2022, 1, 1), (SELECT id FROM Users WHERE username = 'test2'));
-
+INSERT INTO People (firstName, lastName, dateOfBirth, dateOfDeath, ownerID, treeID)
+   VALUES ('Andrzej', 'Matiasz', make_date(1900, 1, 1), make_date(1911, 1, 1), test1ID, 1),
+   ('Maciej', 'Jarewicz', make_date(1901, 1, 1), make_date(1920, 1, 1), test1ID, 1),
+   
+   ('Adam', 'Krzykiewski', make_date(1903, 1, 1), make_date(1933, 1, 1), test1ID, 1),
+   ('Lorenza', 'Ubes', make_date(1947, 1, 1), make_date(1993, 1, 1), test1ID, 1),
+   
+   ('Henryk', 'Kapacz', make_date(1911, 1, 1), make_date(1922, 1, 1), test1ID, 1),
+   ('Agata', 'Lomper', make_date(1923, 1, 1), make_date(1960, 1, 1), test1ID, 1),
+   
+   ('Bartosz', 'Fano', make_date(1932, 1, 1), make_date(2003, 1, 1), test1ID, 1),
+   ('Sandra', 'Eppler', make_date(1983, 1, 1), make_date(2022, 1, 1), test1ID, 1),
+   
+   ('Marianna', 'Kuźmir', make_date(1944, 1, 1), make_date(2003, 1, 1), test2ID, 2),
+   ('Kacper', 'Komrat', make_date(1973, 1, 1), make_date(2022, 1, 1), test2ID, 2);
+   
+END;
+$$ LANGUAGE PLPGSQL;
 
 INSERT INTO Couples (firstPersonID, secondPersonID)
-    VALUES (1, 2), (3, 4), (5, 6), (7, 8), (9, 10);
+   VALUES (1, 2), (3, 4), (5, 6), (7, 8), (9, 10);
 
--- BŁĄD	
+-- BŁĄD
 --INSERT INTO Couples (firstPersonID, secondPersonID)
---	VALUES (1, 9);
+--  VALUES (1, 9);
 
--- BŁĄD	
+-- BŁĄD
 --INSERT INTO Couples (firstPersonID, secondPersonID)
---	VALUES (1, 2);
+--  VALUES (1, 2);
 
--- BŁĄD	
+-- BŁĄD
 --INSERT INTO Couples (firstPersonID, secondPersonID)
---	VALUES (2, 1);
+--  VALUES (2, 1);
 
 
 UPDATE People 
-    SET parentCoupleID = 1
-    WHERE firstName IN ('Adam');
+   SET parentCoupleID = 1
+   WHERE firstName IN ('Adam');
 
 
 UPDATE People
-    SET parentCoupleID = 2
-    WHERE firstName IN ('Agata', 'Sandra');
+   SET parentCoupleID = 2
+   WHERE firstName IN ('Agata', 'Sandra');
 
 
-INSERT INTO Trees (ownerID, rootCoupleID)
-    VALUES (
-        (
-            SELECT id FROM Users
-            WHERE username = 'test1'
-        ), 1),
-    (
-        (
-            SELECT id
-            FROM Users
-            WHERE username = 'test2'
-        ), 5);
+--DELETE FROM Users WHERE username = 'test1';
+--DELETE FROM Trees WHERE id = 1;
+--DELETE FROM Couples WHERE id = 2;
 
 
 INSERT INTO "Payment Methods"
@@ -884,39 +1018,39 @@ INSERT INTO Payments
     VALUES ((
             SELECT id FROM Users
             WHERE username = 'test1'
-        ), 'Paypal', 'Basic', true, NULL, 0.99, make_date(1999, 1, 21)),
+        ), 'Paypal', 'Basic', NULL, 0.99, make_date(1999, 1, 21)),
         ((
             SELECT id FROM Users
             WHERE username = 'test4'
-        ), 'Google Pay', 'Premium', true, NULL, 2.99, make_date(2002, 1, 21)),
+        ), 'Google Pay', 'Premium', NULL, 2.99, make_date(2002, 1, 21)),
         ((
             SELECT id FROM Users
             WHERE username = 'test1'
-        ), 'Apple Pay', 'Basic', true, NULL, 0.99, make_date(1999, 2, 20)),
+        ), 'Apple Pay', 'Basic', NULL, 0.99, make_date(1999, 2, 20)),
         ((
             SELECT id FROM Users
             WHERE username = 'test1'
-        ), 'Credit card', 'Business', false, 'Zbyt niskie saldo', 9.99, make_date(1999, 4, 21)),
+        ), 'Credit card', 'Business', 'Zbyt niskie saldo', 9.99, make_date(1999, 4, 21)),
         ((
             SELECT id FROM Users
             WHERE username = 'test1'
-        ), 'Credit card', 'Business', true, NULL, 9.99, make_date(1999, 4, 21) + interval '1 minute'),
+        ), 'Credit card', 'Business', NULL, 9.99, make_date(1999, 4, 21) + interval '1 minute'),
         ((
             SELECT id FROM Users
             WHERE username = 'test1'
-        ), 'Credit card', 'Premium', true, NULL, 2.99, make_date(1999, 4, 23)),
+        ), 'Credit card', 'Premium', NULL, 2.99, make_date(1999, 4, 23)),
         ((
             SELECT id FROM Users
             WHERE username = 'test1'
-        ), 'Credit card', 'Basic', true, NULL, 0.99, make_date(2023, 1, 2)),
+        ), 'Credit card', 'Basic', NULL, 0.99, make_date(2023, 1, 10)),
         ((
             SELECT id FROM Users
             WHERE username = 'test2'
-        ), 'Credit card', 'Premium', true, NULL, 2.99, make_date(2023, 1, 2)),
+        ), 'Credit card', 'Premium', NULL, 2.99, make_date(2023, 1, 10)),
         ((
             SELECT id FROM Users
             WHERE username = 'test3'
-        ), 'Credit card', 'Business', true, NULL, 9.99, make_date(2023, 1, 2));
+        ), 'Credit card', 'Business', NULL, 9.99, make_date(2023, 1, 10));
 
 
 INSERT INTO Preferences
@@ -957,7 +1091,7 @@ SELECT
             id
         FROM Users
         WHERE
-            username = 'test1'), ''), 'access', 'Google Docs');
+            username = 'test1'), ''), 'create', 'Google Docs');
 
 
 SELECT get_payments_between(make_date(1999, 1, 19), make_date(1999, 4, 23) - interval '1 hour');
